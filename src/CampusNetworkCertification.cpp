@@ -1,27 +1,29 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <WebServer.h>
 #include <Preferences.h>
-
 #include "CameraApp.h"
 
 #include <DNSServer.h>
 
-#include "FS.h"      // SD Card ESP32
-#include "SD_MMC.h"  // SD Card ESP32
+#include "FS.h"     // SD Card ESP32
+#include "SD_MMC.h" // SD Card ESP32
 #include "SPI.h"
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
+String urlDecode(const String& str);
+esp_err_t handleFileExplorer(httpd_req_t *req);
+
 // URLs and credentials for the login process
-const char* url_header = "http://222.197.192.59:9090/zportal/loginForWeb?wlanuserip=5832eab1f630bcdaac19f3d11ad8443c&wlanacname=c8c9622958c8e70501e9284a0abec0fc&ssid=bfd0fd2d574e31c6ba728e0a908cdb8f&nasip=cbde5ddbb5eb03be513e83acf881fb36&snmpagentip=&mac=f862e1a8940dcdac7e81a799bdfc3b57&t=wireless-v2&url=5eabee93b202dc1e55830c33c71804648675c3c7527f3a7112bcb242b5353b5d24a7b21043784bbc&apmac=&nasid=c8c9622958c8e70501e9284a0abec0fc&vid=0147bdf913dc29b3&port=0c8b5612931ecde4&nasportid=b8007b401a20ea61501893ea5c542842d357e7263d72d72c0ebc4d08a33b5660";  // Replace with actual URL
-const char* url_login = "http://222.197.192.59:9090/zportal/login/do";
+const char *url_header = "http://222.197.192.59:9090/zportal/loginForWeb?wlanuserip=5832eab1f630bcdaac19f3d11ad8443c&wlanacname=c8c9622958c8e70501e9284a0abec0fc&ssid=bfd0fd2d574e31c6ba728e0a908cdb8f&nasip=cbde5ddbb5eb03be513e83acf881fb36&snmpagentip=&mac=f862e1a8940dcdac7e81a799bdfc3b57&t=wireless-v2&url=5eabee93b202dc1e55830c33c71804648675c3c7527f3a7112bcb242b5353b5d24a7b21043784bbc&apmac=&nasid=c8c9622958c8e70501e9284a0abec0fc&vid=0147bdf913dc29b3&port=0c8b5612931ecde4&nasportid=b8007b401a20ea61501893ea5c542842d357e7263d72d72c0ebc4d08a33b5660"; // Replace with actual URL
+const char *url_login = "http://222.197.192.59:9090/zportal/login/do";
 // 创建 JSON 对象
 JsonDocument paramJsonDoc;
 
 // 创建Web服务器对象
-WebServer server(80);
+// HTTP server instance
+httpd_handle_t server = NULL;
 Preferences preferences;
 
 // 定义DNS服务器
@@ -32,7 +34,7 @@ const byte DNS_PORT = 53;
 File fsUploadFile;
 
 // HTML 表单页面模板
-const char* htmlFormTemplate = R"rawliteral(
+const char *htmlFormTemplate = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
@@ -131,7 +133,8 @@ const char* htmlFormTemplate = R"rawliteral(
 </html>
 )rawliteral";
 
-void connectToWiFi() {
+void connectToWiFi()
+{
 
   // WiFi credentials
   String ssid = paramJsonDoc["ssid"];
@@ -139,9 +142,10 @@ void connectToWiFi() {
 
   Serial.print("Connecting to WiFi: ");
   Serial.println(ssid);
-  WiFi.begin(ssid, password, 0, NULL, true);  // Connect to the hidden network
+  WiFi.begin(ssid, password, 0, NULL, true); // Connect to the hidden network
 
-  while (WiFi.status() != WL_CONNECTED) {
+  while (WiFi.status() != WL_CONNECTED)
+  {
     delay(500);
     Serial.print(".");
   }
@@ -158,50 +162,57 @@ void connectToWiFi() {
   Serial.println(WiFi.dnsIP());
 }
 
-String get_form_data() {
+String get_form_data()
+{
   Serial.println("Fetching form data...");
   HTTPClient http;
   http.begin(url_header);
   int httpCode = http.GET();
 
-  if (httpCode > 0) {
+  if (httpCode > 0)
+  {
     String payload = http.getString();
     Serial.println("Form data fetched successfully");
 
     int formStart = payload.indexOf("<form id=\"login_form\"");
     int formEnd = payload.indexOf("</form>", formStart);
 
-    if (formStart == -1 || formEnd == -1) {
+    if (formStart == -1 || formEnd == -1)
+    {
       http.end();
       Serial.println("Form not found in HTML");
       return "";
     }
 
-    String formHTML = payload.substring(formStart, formEnd + 7);  // Include the closing form tag
+    String formHTML = payload.substring(formStart, formEnd + 7); // Include the closing form tag
 
     // 创建 JSON 对象
-    StaticJsonDocument<512> jsonDoc;
+    JsonDocument jsonDoc;
 
     // 解析所有 input 元素
     int inputPos = formHTML.indexOf("<input");
-    while (inputPos != -1) {
+    while (inputPos != -1)
+    {
       int inputEnd = formHTML.indexOf(">", inputPos);
       String inputTag = formHTML.substring(inputPos, inputEnd + 1);
 
       int namePos = inputTag.indexOf("name=\"");
-      if (namePos != -1) {
+      if (namePos != -1)
+      {
         int nameEnd = inputTag.indexOf("\"", namePos + 6);
         String name = inputTag.substring(namePos + 6, nameEnd);
 
         int valuePos = inputTag.indexOf("value=\"");
         String value = "";
-        if (valuePos != -1) {
+        if (valuePos != -1)
+        {
           int valueEnd = inputTag.indexOf("\"", valuePos + 7);
           value = inputTag.substring(valuePos + 7, valueEnd);
         }
 
         // 将其他字段添加到 JSON 对象中
-        if (name != "username" && name != "pwd" && name != "") {
+        if (name != "username" && name != "pwd" && name != "")
+        {
           jsonDoc[name] = value;
         }
       }
@@ -211,22 +222,31 @@ String get_form_data() {
 
     // 从第一个服务选项获取默认的 serviceId
     int serviceIdStart = payload.indexOf("id=\"serviceListUl\"");
-    if (serviceIdStart != -1) {
+    if (serviceIdStart != -1)
+    {
       int spanStart = payload.indexOf("<span", serviceIdStart);
-      if (spanStart != -1) {
+      if (spanStart != -1)
+      {
         int valuePos = payload.indexOf("value=\"", spanStart);
-        if (valuePos != -1) {
+        if (valuePos != -1)
+        {
           int valueEnd = payload.indexOf("\"", valuePos + 7);
           String serviceId = payload.substring(valuePos + 7, valueEnd);
           jsonDoc["serviceId"] = serviceId;
           Serial.println("Found serviceId: " + serviceId);
-        } else {
+        }
+        else
+        {
           Serial.println("No value attribute found in span tag");
         }
-      } else {
+      }
+      else
+      {
         Serial.println("No span tag found in serviceListUl");
       }
-    } else {
+    }
+    else
+    {
       Serial.println("No serviceListUl found in HTML");
     }
 
@@ -245,8 +265,10 @@ String get_form_data() {
 
     // 将 JSON 对象序列化为 formData 字符串
     String formData;
-    for (JsonPair kv : jsonDoc.as<JsonObject>()) {
-      if (formData.length() > 0) {
+    for (JsonPair kv : jsonDoc.as<JsonObject>())
+    {
+      if (formData.length() > 0)
+      {
         formData += "&";
       }
       formData += kv.key().c_str();
@@ -259,7 +281,9 @@ String get_form_data() {
     Serial.println(formData);
 
     return formData;
-  } else {
+  }
+  else
+  {
     Serial.println("HTTP request failed with code: " + String(httpCode));
   }
 
@@ -268,23 +292,27 @@ String get_form_data() {
   return "";
 }
 
-bool authenticated_connection() {
+bool authenticated_connection()
+{
   Serial.println("Authenticating connection...");
   HTTPClient http;
   http.begin(url_login);
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
   String formData = get_form_data();
-  if (formData == "") {
+  if (formData == "")
+  {
     return false;
   }
 
   int httpCode = http.POST(formData);
-  if (httpCode > 0) {
+  if (httpCode > 0)
+  {
     String response = http.getString();
     Serial.print("Authentication response: ");
     Serial.println(response);
-    if (response.indexOf("success") != -1 || response.indexOf("online") != -1) {
+    if (response.indexOf("success") != -1 || response.indexOf("online") != -1)
+    {
       http.end();
       return true;
     }
@@ -296,14 +324,17 @@ bool authenticated_connection() {
 }
 
 // 检查 WiFi 是否连接
-bool is_connected() {
-  if (WiFi.status() == WL_CONNECTED) {
+bool is_connected()
+{
+  if (WiFi.status() == WL_CONNECTED)
+  {
     HTTPClient http;
-    http.begin("https://www.baidu.com");  // 使用 HTTPS 而不是 HTTP
+    http.begin("https://www.baidu.com"); // 使用 HTTPS 而不是 HTTP
     int httpCode = http.GET();
 
     // 检查 HTTP 响应码是否为 200
-    if (httpCode == HTTP_CODE_OK) {
+    if (httpCode == HTTP_CODE_OK)
+    {
       String payload = http.getString();
 
       // 打印 HTTP 响应的内容
@@ -314,20 +345,27 @@ bool is_connected() {
       bool found = payload.indexOf("baidu") != -1;
 
       // 打印检查结果
-      if (found) {
+      if (found)
+      {
         Serial.println("成功找到 '百度' 字样");
-      } else {
+      }
+      else
+      {
         Serial.println("未找到 '百度' 字样");
       }
 
       http.end();
       return found;
-    } else {
+    }
+    else
+    {
       Serial.print("HTTP 请求失败，错误码: ");
       Serial.println(httpCode);
     }
     http.end();
-  } else {
+  }
+  else
+  {
     Serial.println("WiFi 未连接");
   }
 
@@ -335,7 +373,8 @@ bool is_connected() {
 }
 
 // 处理表单页面请求
-void handleConfig() {
+esp_err_t handleConfig(httpd_req_t *req)
+{
   preferences.begin("config", true);
   String ssid = preferences.getString("ssid", "");
   String password = preferences.getString("password", "");
@@ -351,19 +390,55 @@ void handleConfig() {
   htmlForm.replace("%USERPASSWORD%", userpassword);
   htmlForm.replace("%NETWORK_CHECKED%", network == "internal" ? "checked" : "");
 
-  server.send(200, "text/html", htmlForm);
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, htmlForm.c_str(), htmlForm.length());
+  return ESP_OK;
+}
+
+String getPostArg(const String &body, const String &argName)
+{
+  String searchStr = argName + "=";
+  int startIndex = body.indexOf(searchStr);
+  if (startIndex == -1)
+  {
+    return "";
+  }
+  startIndex += searchStr.length();
+  int endIndex = body.indexOf("&", startIndex);
+  if (endIndex == -1)
+  {
+    endIndex = body.length();
+  }
+  return body.substring(startIndex, endIndex);
 }
 
 // 处理表单提交并保存参数
-void handleSave() {
-  if (server.method() == HTTP_POST) {
-    String ssid = server.arg("ssid");
-    String password = server.arg("password");
-    String username = server.arg("username");
-    String userpassword = server.arg("userpassword");
-    String network = server.arg("network");
+esp_err_t handleSave(httpd_req_t *req)
+{
+  if (req->method == HTTP_POST)
+  {
+    // 获取表单数据
+    char buf[512];
+    int ret = httpd_req_recv(req, buf, sizeof(buf));
+    if (ret <= 0)
+    {
+      if (ret == HTTPD_SOCK_ERR_TIMEOUT)
+      {
+        httpd_resp_send_408(req);
+      }
+      return ESP_FAIL;
+    }
 
-    if (network != "internal") {
+    // 解析表单数据
+    String strBuf = String(buf);
+    String ssid = urlDecode(getPostArg(strBuf, "ssid"));
+    String password = urlDecode(getPostArg(strBuf, "password"));
+    String username = urlDecode(getPostArg(strBuf, "username"));
+    String userpassword = urlDecode(getPostArg(strBuf, "userpassword"));
+    String network = getPostArg(strBuf, "network");
+
+    if (network != "internal")
+    {
       network = "external";
     }
 
@@ -388,14 +463,18 @@ void handleSave() {
     Serial.print("网络类型: ");
     Serial.println(network);
 
-    server.send(200, "text/html", "<meta charset=\"UTF-8\">配置保存成功！");
-  } else {
-    server.send(405, "text/plain", "Method Not Allowed");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, "<meta charset=\"UTF-8\">配置保存成功！", HTTPD_RESP_USE_STRLEN);
   }
+  else
+  {
+    httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, "Method Not Allowed");
+  }
+  return ESP_OK;
 }
 
-
-void reloadParam() {
+void reloadParam()
+{
   // 读取并打印保存的参数
   preferences.begin("config", true);
   String ssid = preferences.getString("ssid", "");
@@ -405,22 +484,26 @@ void reloadParam() {
   String network = preferences.getString("network", "");
   preferences.end();
 
-  if (ssid.isEmpty()) {
+  if (ssid.isEmpty())
+  {
     paramJsonDoc["ssid"] = "CCCP";
-  } else {
+  }
+  else
+  {
     paramJsonDoc["ssid"] = ssid;
   }
 
-  if (password.isEmpty()) {
+  if (password.isEmpty())
+  {
     paramJsonDoc["password"] = "64456445";
-  } else {
+  }
+  else
+  {
     paramJsonDoc["password"] = password;
   }
   paramJsonDoc["username"] = username;
   paramJsonDoc["userpassword"] = userpassword;
   paramJsonDoc["network"] = network;
-
-
 
   Serial.println("保存的参数:");
   Serial.print("WiFi 热点名称: ");
@@ -435,63 +518,75 @@ void reloadParam() {
   Serial.println(network);
 }
 
-void FSExplorerInit() {
-  if (!SD_MMC.begin()) {
+bool g_sd_init_ok = false;
+void FSExplorerInit()
+{
+  if (!SD_MMC.begin())
+  {
     Serial.println("SD Card Mount Failed");
-    server.on("/explorer", handleNoSD);
     return;
   }
 
   uint8_t cardType = SD_MMC.cardType();
   // Check if SD card is present and can be initialized
-  if (cardType == CARD_NONE) {
+  if (cardType == CARD_NONE)
+  {
     Serial.println("No SD Card attached");
-    server.on("/explorer", handleNoSD);
     return;
   }
 
-  server.on("/explorer", handleFileExplorer);
-  server.on("/download", handleFileDownload);
-  server.on(
-    "/upload", HTTP_POST, []() {
-      server.send(200, "text/plain", "");
-    },
-    handleFileUpload);
-
   Serial.print("SD Card Type: ");
-  if (cardType == CARD_MMC) {
+  if (cardType == CARD_MMC)
+  {
     Serial.println("MMC");
-  } else if (cardType == CARD_SD) {
+  }
+  else if (cardType == CARD_SD)
+  {
     Serial.println("SDSC");
-  } else if (cardType == CARD_SDHC) {
+  }
+  else if (cardType == CARD_SDHC)
+  {
     Serial.println("SDHC");
-  } else {
+  }
+  else
+  {
     Serial.println("UNKNOWN");
   }
 
   uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
   Serial.printf("SD Card Size: %lluMB\n", cardSize);
+
+  g_sd_init_ok = true;
 }
 
 // Helper function to URL-encode a string
-String urlEncode(const String& str) {
+String urlEncode(const String &str)
+{
   String encodedString = "";
   char c;
   char code0;
   char code1;
-  for (int i = 0; i < str.length(); i++) {
+  for (int i = 0; i < str.length(); i++)
+  {
     c = str.charAt(i);
-    if (c == ' ') {
+    if (c == ' ')
+    {
       encodedString += '+';
-    } else if (isalnum(c)) {
+    }
+    else if (isalnum(c))
+    {
       encodedString += c;
-    } else {
+    }
+    else
+    {
       code1 = (c & 0x0F) + '0';
-      if ((c & 0x0F) > 9) {
+      if ((c & 0x0F) > 9)
+      {
         code1 = (c & 0x0F) - 10 + 'A';
       }
       code0 = ((c >> 4) & 0x0F) + '0';
-      if (((c >> 4) & 0x0F) > 9) {
+      if (((c >> 4) & 0x0F) > 9)
+      {
         code0 = ((c >> 4) & 0x0F) - 10 + 'A';
       }
       encodedString += '%';
@@ -503,21 +598,28 @@ String urlEncode(const String& str) {
 }
 
 // Helper function to URL-decode a string
-String urlDecode(const String& str) {
+String urlDecode(const String &str)
+{
   String decodedString = "";
   char c;
   char code0;
   char code1;
-  for (int i = 0; i < str.length(); i++) {
+  for (int i = 0; i < str.length(); i++)
+  {
     c = str.charAt(i);
-    if (c == '+') {
+    if (c == '+')
+    {
       decodedString += ' ';
-    } else if (c == '%') {
+    }
+    else if (c == '%')
+    {
       code0 = str.charAt(++i);
       code1 = str.charAt(++i);
       c = (hexToDec(code0) << 4) | hexToDec(code1);
       decodedString += c;
-    } else {
+    }
+    else
+    {
       decodedString += c;
     }
   }
@@ -525,84 +627,135 @@ String urlDecode(const String& str) {
 }
 
 // Helper function to convert hex character to decimal
-char hexToDec(char c) {
-  if ('0' <= c && c <= '9') {
+char hexToDec(char c)
+{
+  if ('0' <= c && c <= '9')
+  {
     return c - '0';
-  } else if ('a' <= c && c <= 'f') {
+  }
+  else if ('a' <= c && c <= 'f')
+  {
     return c - 'a' + 10;
-  } else if ('A' <= c && c <= 'F') {
+  }
+  else if ('A' <= c && c <= 'F')
+  {
     return c - 'A' + 10;
   }
   return 0;
 }
 
 // Helper function to determine content type based on file extension
-String getContentType(const String& path) {
-  if (path.endsWith(".txt") || path.endsWith(".h")) return "text/plain; charset=utf-8";
-  else if (path.endsWith(".htm") || path.endsWith(".html")) return "text/html; charset=utf-8";
-  else if (path.endsWith(".css")) return "text/css";
-  else if (path.endsWith(".js")) return "application/javascript";
-  else if (path.endsWith(".png")) return "image/png";
-  else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
-  else if (path.endsWith(".gif")) return "image/gif";
+String getContentType(const String &path)
+{
+  if (path.endsWith(".txt") || path.endsWith(".h"))
+    return "text/plain; charset=utf-8";
+  else if (path.endsWith(".htm") || path.endsWith(".html"))
+    return "text/html; charset=utf-8";
+  else if (path.endsWith(".css"))
+    return "text/css";
+  else if (path.endsWith(".js"))
+    return "application/javascript";
+  else if (path.endsWith(".png"))
+    return "image/png";
+  else if (path.endsWith(".jpg") || path.endsWith(".jpeg"))
+    return "image/jpeg";
+  else if (path.endsWith(".gif"))
+    return "image/gif";
   return "application/octet-stream";
 }
 
 // Helper function to determine if the content type should be inline preview
-bool isInlinePreview(const String& contentType) {
+bool isInlinePreview(const String &contentType)
+{
   return contentType.startsWith("text/") || contentType.startsWith("image/") || contentType == "application/javascript";
 }
 
-void handleFileDownload() {
-  if (server.hasArg("file")) {
-    String path = server.arg("file");
-    Serial.println("Download request for file: " + path);
-    path = "/" + urlDecode(path);  // Decode the URL-encoded file name
-    File downloadFile = SD_MMC.open(path, FILE_READ);
-    if (downloadFile) {
-      String contentType = getContentType(path);
-      bool inlinePreview = isInlinePreview(contentType);
+// Handle file download
+esp_err_t handleFileDownload(httpd_req_t *req)
+{
+  char *buf;
+  size_t buf_len;
+  buf_len = httpd_req_get_url_query_len(req) + 1;
+  if (buf_len > 1)
+  {
+    buf = (char *)malloc(buf_len);
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK)
+    {
+      char file[32];
+      if (httpd_query_key_value(buf, "file", file, sizeof(file)) == ESP_OK)
+      {
+        String path = String("/") + String(file);
+        path = urlDecode(path); // Decode the URL-encoded file name
+        File downloadFile = SD_MMC.open(path, FILE_READ);
+        if (downloadFile)
+        {
+          String contentType = getContentType(path);
+          bool inlinePreview = isInlinePreview(contentType);
 
-      server.sendHeader("Content-Type", contentType);
-      // if (inlinePreview) {
-      //   server.sendHeader("Content-Disposition", "inline; filename=\"" + String(path.substring(1)) + "\"");  // Remove leading "/" for filename
-      // } else {
-      //   server.sendHeader("Content-Disposition", "attachment; filename=\"" + String(path.substring(1)) + "\"");  // Remove leading "/" for filename
-      // }
+          httpd_resp_set_type(req, contentType.c_str());
+          if (inlinePreview)
+          {
+            httpd_resp_set_hdr(req, "Content-Disposition", ("inline; filename*=UTF-8''" + String(file)).c_str());
+          }
+          else
+          {
+            httpd_resp_set_hdr(req, "Content-Disposition", ("attachment; filename*=UTF-8''" + String(file)).c_str());
+          }
 
-      // Ensure the filename is properly encoded for UTF-8
-      String encodedFilename = String(path.substring(1));
-
-      if (inlinePreview) {
-        server.sendHeader("Content-Disposition", "inline; filename*=UTF-8''" + encodedFilename);
-      } else {
-        server.sendHeader("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFilename);
+          String fileContent;
+          while (downloadFile.available())
+          {
+            fileContent += (char)downloadFile.read();
+          }
+          httpd_resp_send(req, fileContent.c_str(), fileContent.length());
+          downloadFile.close();
+        }
+        else
+        {
+          httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not Found");
+        }
       }
-
-      server.streamFile(downloadFile, contentType);
-      downloadFile.close();
-    } else {
-      Serial.println("File not found: " + path);
-      server.send(404, "text/plain", "File not found");
     }
-  } else {
-    server.send(400, "text/plain", "Bad Request");
+    free(buf);
   }
+  else
+  {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad Request");
+  }
+  return ESP_OK;
 }
 
-void handleFileExplorer() {
+// Handle file explorer
+esp_err_t handleFileExplorer(httpd_req_t *req)
+{
   String path = "/";
-  if (server.hasArg("dir")) {
-    path = server.arg("dir");
+  char *buf;
+  size_t buf_len;
+  buf_len = httpd_req_get_url_query_len(req) + 1;
+  if (buf_len > 1)
+  {
+    buf = (char *)malloc(buf_len);
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK)
+    {
+      char dir[32];
+      if (httpd_query_key_value(buf, "dir", dir, sizeof(dir)) == ESP_OK)
+      {
+        path = String("/") + String(dir);
+      }
+    }
+    free(buf);
   }
+
   File root = SD_MMC.open(path);
-  if (!root) {
-    server.send(404, "text/plain", "Directory not found");
-    return;
+  if (!root)
+  {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not Found");
+    return ESP_OK;
   }
-  if (!root.isDirectory()) {
-    server.send(404, "text/plain", "Not a directory");
-    return;
+  if (!root.isDirectory())
+  {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not Found");
+    return ESP_OK;
   }
 
   String html = R"rawliteral(
@@ -691,10 +844,14 @@ function updateFileName() {
 )rawliteral";
 
   File file = root.openNextFile();
-  while (file) {
-    if (file.isDirectory()) {
+  while (file)
+  {
+    if (file.isDirectory())
+    {
       html += "<li><a href=\"/explorer?dir=" + String(file.name()) + "\">" + String(file.name()) + "/</a></li>";
-    } else {
+    }
+    else
+    {
       String encodedFileName = urlEncode(file.name());
       html += "<li><a href=\"/download?file=" + encodedFileName + "\">" + String(file.name()) + "</a></li>";
     }
@@ -713,44 +870,159 @@ function updateFileName() {
 </html>
 )rawliteral";
 
-  server.send(200, "text/html", html);
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, html.c_str(), html.length());
+  return ESP_OK;
 }
 
-void handleFileUpload() {
-  HTTPUpload& upload = server.upload();
-  if (upload.status == UPLOAD_FILE_START) {
-    String filename = upload.filename;
-    filename = "/" + filename;
-    Serial.printf("Upload File Name: %s\n", filename.c_str());
-    fsUploadFile = SD_MMC.open(filename, FILE_WRITE);
-  } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (fsUploadFile) {
-      fsUploadFile.write(upload.buf, upload.currentSize);
-    }
-  } else if (upload.status == UPLOAD_FILE_END) {
-    if (fsUploadFile) {
-      fsUploadFile.close();
-    }
-    server.send(200, "text/plain", "File Uploaded Successfully");
-  } else {
-    server.send(500, "text/plain", "File Upload Failed");
+// Handle file upload
+esp_err_t handleFileUpload(httpd_req_t *req)
+{
+  httpd_req_recv(req, NULL, 0); // Consume the request payload
+
+  // Get the file name from the headers
+  char contentDisposition[128];
+  if (httpd_req_get_hdr_value_str(req, "Content-Disposition", contentDisposition, sizeof(contentDisposition)) == ESP_OK)
+  {
+    // 继续处理 header 值
   }
+  else
+  {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad Request");
+    return ESP_FAIL;
+  }
+
+  // Extract the file name from the Content-Disposition header
+  String fileName = "";
+  const char *filenameKey = "filename=\"";
+  const char *start = strstr(contentDisposition, filenameKey);
+  if (start)
+  {
+    start += strlen(filenameKey);
+    const char *end = strchr(start, '\"');
+    if (end)
+    {
+      fileName = String(start).substring(0, end - start);
+    }
+  }
+
+  if (fileName == "")
+  {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad Request");
+    return ESP_FAIL;
+  }
+
+  // Open the file for writing
+  fsUploadFile = SD_MMC.open("/" + fileName, FILE_WRITE);
+  if (!fsUploadFile)
+  {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  // Write the uploaded file content
+  int remaining = req->content_len;
+  while (remaining > 0)
+  {
+    char buf[512];
+    int len = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)));
+    if (len <= 0)
+    {
+      if (len == HTTPD_SOCK_ERR_TIMEOUT)
+      {
+        httpd_resp_send_408(req);
+      }
+      fsUploadFile.close();
+      SD_MMC.remove("/" + fileName);
+      return ESP_FAIL;
+    }
+    fsUploadFile.write((const uint8_t *)buf, len);
+    remaining -= len;
+  }
+
+  fsUploadFile.close();
+  httpd_resp_send(req, "File Uploaded Successfully", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
 }
 
-void handleNoSD() {
-  String html = "<html><head><style>";
-  html += "body { font-family: Arial, sans-serif; background-color: #f8f9fa; color: #343a40; text-align: center; padding-top: 50px; }";
-  html += "h1 { color: #dc3545; }";
-  html += "</style></head><body>";
-  html += "<h1>SD Card Not Found</h1>";
-  html += "</body></html>";
+// Handle no SD card found
+esp_err_t handleNoSD(httpd_req_t *req)
+{
+  const char *html = "<html><head><style>"
+                     "body { font-family: Arial, sans-serif; background-color: #f8f9fa; color: #343a40; text-align: center; padding-top: 50px; }"
+                     "h1 { color: #dc3545; }"
+                     "</style></head><body>"
+                     "<h1>SD Card Not Found</h1>"
+                     "</body></html>";
 
-  server.send(200, "text/html", html);
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, html, strlen(html));
+  return ESP_OK;
 }
 
-void setup() {
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);  // Disable brownout detector
-  Serial.begin(115200);                       // Initialize serial communication at 115200 baud rate
+httpd_handle_t start_webserver(void)
+{
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  httpd_handle_t server = NULL;
+
+  if (httpd_start(&server, &config) == ESP_OK)
+  {
+    httpd_uri_t config_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = handleConfig,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &config_uri);
+
+    httpd_uri_t save_uri = {
+        .uri = "/save",
+        .method = HTTP_POST,
+        .handler = handleSave,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &save_uri);
+
+    httpd_uri_t explorer_uri = {
+        .uri = "/explorer",
+        .method = HTTP_GET,
+        .handler = handleFileExplorer,
+        .user_ctx = NULL};
+
+    httpd_uri_t haveNoSD_uri = {
+        .uri = "/explorer",
+        .method = HTTP_GET,
+        .handler = handleNoSD,
+        .user_ctx = NULL};
+
+    if (g_sd_init_ok)
+    {
+      httpd_register_uri_handler(server, &explorer_uri);
+    }
+    else
+    {
+      httpd_register_uri_handler(server, &haveNoSD_uri);
+    }
+
+    httpd_uri_t download_uri = {
+        .uri = "/download",
+        .method = HTTP_GET,
+        .handler = handleFileDownload,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &download_uri);
+
+    httpd_uri_t upload_uri = {
+        .uri = "/upload",
+        .method = HTTP_POST,
+        .handler = handleFileUpload,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &upload_uri);
+  }
+  return server;
+}
+
+void setup()
+{
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // Disable brownout detector
+  Serial.begin(115200);                      // Initialize serial communication at 115200 baud rate
 
   // 设置ESP32作为隐藏的AP热点
   // WiFi.softAP("ESP32", "12345678", 1, true);
@@ -766,48 +1038,49 @@ void setup() {
   setupCamera();
 
   // 启动Web服务器
-  server.on("/", handleConfig);
-  server.on("/save", handleSave);
-  server.begin();
+  server = start_webserver();
+  startCameraServer(server);
   Serial.println("Web 服务器已启动");
   Serial.print("Camera Stream Ready! Go to: http://");
   Serial.println(WiFi.localIP());
-
-
-  startCameraServer();
 
   // 配置DNS服务器
   // dnsServer.start(DNS_PORT, "www.lin.com", WiFi.localIP());
 }
 
-
 // Timer for the loop delay
 unsigned long previousMillis = 0;
-const long interval = 4000;  // interval in milliseconds
+const long interval = 4000; // interval in milliseconds
 
-void loop() {
+void loop()
+{
   unsigned long currentMillis = millis();
 
-  if (currentMillis - previousMillis >= interval) {
+  if (currentMillis - previousMillis >= interval)
+  {
     previousMillis = currentMillis;
 
     static int try_count = 0;
     try_count++;
 
-    if (is_connected()) {
+    if (is_connected())
+    {
       Serial.printf("Try: %d - Network connected\n", try_count);
-    } else {
+    }
+    else
+    {
       Serial.printf("Try: %d - Network disconnected\n", try_count);
-      if (authenticated_connection()) {
+      if (authenticated_connection())
+      {
         Serial.println("Successfully reconnected");
-      } else {
+      }
+      else
+      {
         Serial.println("Reconnection failed");
       }
     }
   }
 
-  // 处理客户端请求
-  server.handleClient();
   // 处理DNS请求
   // dnsServer.processNextRequest();
 }

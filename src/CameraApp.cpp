@@ -7,7 +7,6 @@
 #include "fb_gfx.h"
 #include "soc/soc.h"           // disable brownout problems
 #include "soc/rtc_cntl_reg.h"  // disable brownout problems
-#include <WebServer.h>
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 
@@ -116,8 +115,6 @@
 #error "Camera model not selected"
 #endif
 
-
-extern WebServer server;  // 声明外部的WebServer实例
 httpd_handle_t stream_httpd = NULL;
 
 static const char *_STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
@@ -295,35 +292,67 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 }
 
 // 处理LED开关请求
-void handleToggleLED() {
+esp_err_t handleToggleLED(httpd_req_t *req) {
   static bool ledState = true;  // LED 初始状态为打开
   ledState = !ledState;
   // digitalWrite(LED_PIN, ledState ? HIGH : LOW);
-  server.send(200, "text/plain", ledState ? "LED is ON" : "LED is OFF");
+  const char *resp_str = ledState ? "LED is ON" : "LED is OFF";
+  httpd_resp_send(req, resp_str, strlen(resp_str));
+  return ESP_OK;
 }
 
 // 处理摄像头页面请求
-void handleCameraPage() {
-  server.send(200, "text/html", (const char *)INDEX_HTML);
+esp_err_t handleCameraPage(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, (const char *)INDEX_HTML, strlen((const char *)INDEX_HTML));
+  return ESP_OK;
 }
 
-void handleCmd() {
-  String var = server.arg("go");
-
-  sensor_t *s = esp_camera_sensor_get();
-  int res = 0;
-
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.send(200, "text/plain", "");
+esp_err_t handleCmd(httpd_req_t *req) {
+  char *buf;
+  size_t buf_len;
+  buf_len = httpd_req_get_url_query_len(req) + 1;
+  if (buf_len > 1) {
+    buf = (char *)malloc(buf_len);
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+      char go[32];
+      if (httpd_query_key_value(buf, "go", go, sizeof(go)) == ESP_OK) {
+        // 处理命令逻辑
+      }
+    }
+    free(buf);
+  }
+  httpd_resp_send(req, "", 0);  // 发送空响应
+  return ESP_OK;
 }
 
-void startCameraServer() {
-  server.on("/camera", HTTP_GET, handleCameraPage);
-  server.on("/action", HTTP_GET, handleCmd);
-  server.on("/toggleLED", handleToggleLED);
-  server.begin();
 
-  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+void startCameraServer(httpd_handle_t server) {
+
+  httpd_uri_t camera_page_uri = {
+    .uri = "/camera",
+    .method = HTTP_GET,
+    .handler = handleCameraPage,
+    .user_ctx = NULL
+  };
+
+  httpd_uri_t toggle_led_uri = {
+    .uri = "/toggleLED",
+    .method = HTTP_GET,
+    .handler = handleToggleLED,
+    .user_ctx = NULL
+  };
+
+  httpd_uri_t cmd_uri = {
+    .uri = "/action",
+    .method = HTTP_GET,
+    .handler = handleCmd,
+    .user_ctx = NULL
+  };
+
+  httpd_register_uri_handler(server, &camera_page_uri);
+  httpd_register_uri_handler(server, &toggle_led_uri);
+  httpd_register_uri_handler(server, &cmd_uri);
 
   httpd_uri_t stream_uri = {
     .uri = "/stream",
@@ -332,8 +361,8 @@ void startCameraServer() {
     .user_ctx = NULL
   };
 
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 81;
-  // config.ctrl_port += 1;
   if (httpd_start(&stream_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
   }

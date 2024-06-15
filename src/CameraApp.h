@@ -8,7 +8,7 @@ void setupCamera();
 void handleCameraStream();
 void handleCameraPage();
 void handleToggleLED();
-void startCameraServer();
+void startCameraServer(httpd_handle_t server);
 void configCamera();
 #define LED_PIN 4  // 定义LED引脚 ,PIN4与SDIO接口冲突
 
@@ -18,4 +18,8 @@ void handleFileUpload();
 void handleFileExplorer();
 void handleFileDownload();
 char hexToDec(char c);
+
+#define MIN(a,b) ((a)<(b)?(a):(b))
+
+esp_err_t handleFileExplorer(httpd_req_t *req);
 #endif // CAMERA_H
